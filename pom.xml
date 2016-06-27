@@ -10,7 +10,7 @@
 
     <groupId>com.astonish</groupId>
     <artifactId>dropwizard-routing</artifactId>
-    <version>0.8.5-SNAPSHOT</version>
+    <version>0.8.5-Innovation-SNAPSHOT</version>
     <packaging>pom</packaging>
     <name>Adds database routing capability to the Dropwizard project.</name>
     <url>http://dropwizardrouting.astonish.com/</url>
