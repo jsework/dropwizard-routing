@@ -119,11 +119,11 @@ public class RoutingHibernateBundleTest {
                 .forClass(SessionFactoryHealthCheck.class);
         verify(healthChecks).register(eq(ROUTE_ONE), captor.capture());
         assertThat(captor.getValue().getSessionFactory()).isEqualTo(sessionFactoryRouteOne);
-        assertThat(captor.getValue().getValidationQuery()).isEqualTo("/* Sess Factory Health Check: routeKey [RouteOne] */ SELECT something RouteOne");
+        assertThat(captor.getValue().getValidationQuery()).isEqualTo("/* Sess Factory Health Check routeKey RouteOne */ SELECT something RouteOne");
 
         verify(healthChecks).register(eq(ROUTE_TWO), captor.capture());
         assertThat(captor.getValue().getSessionFactory()).isEqualTo(sessionFactoryRouteTwo);
-        assertThat(captor.getValue().getValidationQuery()).isEqualTo("/* Sess Factory Health Check: routeKey [RouteTwo] */ SELECT something RouteTwo");
+        assertThat(captor.getValue().getValidationQuery()).isEqualTo("/* Sess Factory Health Check routeKey RouteTwo */ SELECT something RouteTwo");
     }
 
     @Test

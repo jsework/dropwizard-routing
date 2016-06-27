@@ -107,7 +107,7 @@ public abstract class RoutingHibernateBundle<T extends Configuration> implements
             final SessionFactory sessionFactory = sessionFactoryFactory.build(this, environment, dbConfig, entities,
                     routeKey);
             
-            String validationQuery = "/* Sess Factory Health Check: routeKey [" + routeKey + "] */ " + dbConfig.getValidationQuery();
+            String validationQuery = "/* Sess Factory Health Check routeKey " + routeKey + " */ " + dbConfig.getValidationQuery();
             
             environment.healthChecks().register(
                     routeKey,
