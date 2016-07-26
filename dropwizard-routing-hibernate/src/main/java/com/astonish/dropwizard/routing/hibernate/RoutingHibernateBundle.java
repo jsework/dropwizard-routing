@@ -38,6 +38,7 @@ import com.astonish.dropwizard.routing.db.RoutingDatabaseConfiguration;
 import com.fasterxml.jackson.datatype.hibernate4.Hibernate4Module;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.collect.Lists;
 import com.google.common.util.concurrent.Futures;
 import com.google.common.util.concurrent.ListenableFuture;
 import com.google.common.util.concurrent.ListeningExecutorService;
@@ -118,35 +119,43 @@ public abstract class RoutingHibernateBundle<T extends Configuration> implements
     }
     
     private Map<String, SessionFactory> buildSessionFactories(T configuration, Environment environment) throws Exception {
-    	
-    	List<ListenableFuture<FutureCallResult>> listenableFutureList = new ArrayList<ListenableFuture<FutureCallResult>>();
-    	
+    	    	
         final Map<String, SessionFactory> sessionFactories = new LinkedHashMap<>();
         
-        for (DataSourceRoute route : getDataSourceRoutes(configuration)) {
-        	listenableFutureList.add(getAgencySessionFactory(route, environment));
+        List<List<DataSourceRoute>> chunks = Lists.partition(getDataSourceRoutes(configuration), 14); // todo configure the chunk size
+        int chunkIndex = 0;
+        
+        for (List<DataSourceRoute> chunk : chunks) {
+        	List<ListenableFuture<FutureCallResult>> listenableFutureList = new ArrayList<ListenableFuture<FutureCallResult>>();
+        	
+	        for (DataSourceRoute route : chunk) {	        	
+	        	listenableFutureList.add(getAgencySessionFactory(route, environment));
+	        }
+
+	        ListenableFuture<List<FutureCallResult>> futureResults = Futures.allAsList(listenableFutureList);
+	        
+	        startSignal.countDown();	        
+	        System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** start waiting, chunk index " + (chunkIndex++) );
+		        
+	        List<FutureCallResult> listOfFutureCallresults = futureResults.get();
+        
+	        System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** Done waiting, chunk index " + chunkIndex + " "+ listOfFutureCallresults.size() + " results");
+	        
+			for(FutureCallResult futureCallResult : listOfFutureCallresults){
+				final String routeKey = futureCallResult.route.getRouteName();
+				final DataSourceFactory dbConfig = futureCallResult.route.getDatabase();
+	            
+				String validationQuery = "/* Sess Factory Health Check routeKey " + routeKey + " */ " + dbConfig.getValidationQuery();
+	
+				environment.healthChecks().register(	routeKey,
+														new SessionFactoryHealthCheck(environment.getHealthCheckExecutorService(),
+																						dbConfig.getValidationQueryTimeout().or(Duration.seconds(5)),
+																						futureCallResult.sessionFactory, validationQuery));			
+				sessionFactories.put(routeKey, futureCallResult.sessionFactory);
+	        }
         }
         
-        ListenableFuture<List<FutureCallResult>> futureResults = Futures.allAsList(listenableFutureList);
-        startSignal.countDown();       
-        
-        List<FutureCallResult> listOfFutureCallresults = futureResults.get();
-        
-        System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** Done waiting, " + listOfFutureCallresults.size() + " results");
-        
-		for(FutureCallResult futureCallResult : listOfFutureCallresults){
-			final String routeKey = futureCallResult.route.getRouteName();
-			final DataSourceFactory dbConfig = futureCallResult.route.getDatabase();
-            
-			String validationQuery = "/* Sess Factory Health Check routeKey " + routeKey + " */ " + dbConfig.getValidationQuery();
-
-			environment.healthChecks().register(	routeKey,
-													new SessionFactoryHealthCheck(environment.getHealthCheckExecutorService(),
-																					dbConfig.getValidationQueryTimeout().or(Duration.seconds(5)),
-																					futureCallResult.sessionFactory, validationQuery));			
-			sessionFactories.put(routeKey, futureCallResult.sessionFactory);
-		}
-		
+        System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** COMPLETELY Done waiting on all chunks");        
         return sessionFactories;
     }
 
