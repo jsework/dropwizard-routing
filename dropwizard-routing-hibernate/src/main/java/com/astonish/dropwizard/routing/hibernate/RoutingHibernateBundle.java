@@ -25,19 +25,28 @@ import io.dropwizard.setup.Bootstrap;
 import io.dropwizard.setup.Environment;
 import io.dropwizard.util.Duration;
 
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
+import java.util.List;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Callable;
 
 import com.astonish.dropwizard.routing.db.DataSourceRoute;
 import com.astonish.dropwizard.routing.db.RoutingDatabaseConfiguration;
 import com.fasterxml.jackson.datatype.hibernate4.Hibernate4Module;
 import com.google.common.collect.ImmutableList;
 import com.google.common.collect.ImmutableMap;
+import com.google.common.util.concurrent.Futures;
+import com.google.common.util.concurrent.ListenableFuture;
+import com.google.common.util.concurrent.ListeningExecutorService;
+import com.google.common.util.concurrent.MoreExecutors;
 
 import org.hibernate.SessionFactory;
 
 /**
- * Routing Hibernate bundle.
+ * Routing Hibernate bundle.  Seriously.
  */
 public abstract class RoutingHibernateBundle<T extends Configuration> implements ConfiguredBundle<T>,
         RoutingDatabaseConfiguration<T> {
@@ -45,6 +54,9 @@ public abstract class RoutingHibernateBundle<T extends Configuration> implements
     private final ImmutableList<Class<?>> entities;
     private final RoutingSessionFactoryFactory sessionFactoryFactory;
 
+    private ListeningExecutorService executorService;
+    private CountDownLatch startSignal;
+    
     /**
      * @param entity
      *            the first Hibernate entity
@@ -64,6 +76,8 @@ public abstract class RoutingHibernateBundle<T extends Configuration> implements
     public RoutingHibernateBundle(ImmutableList<Class<?>> entities, RoutingSessionFactoryFactory sessionFactoryFactory) {
         this.entities = entities;
         this.sessionFactoryFactory = sessionFactoryFactory;
+        this.startSignal = new CountDownLatch(1);
+        this.executorService = MoreExecutors.listeningDecorator(Executors.newFixedThreadPool(100)); // TODO make thread quantity configurable configuration.getAms360DebugNumberOfThreads()));
     }
 
     /*
@@ -98,26 +112,67 @@ public abstract class RoutingHibernateBundle<T extends Configuration> implements
      * @see com.codahale.dropwizard.ConfiguredBundle#run(java.lang.Object, com.codahale.dropwizard.setup.Environment)
      */
     @Override
-    public final void run(T configuration, Environment environment) throws Exception {
-        final Map<String, SessionFactory> sessionFactories = new LinkedHashMap<>();
-        for (DataSourceRoute route : getDataSourceRoutes(configuration)) {
-            final String routeKey = route.getRouteName();
-            final DataSourceFactory dbConfig = route.getDatabase();
-
-            final SessionFactory sessionFactory = sessionFactoryFactory.build(this, environment, dbConfig, entities,
-                    routeKey);
-            
-            String validationQuery = "/* Sess Factory Health Check routeKey " + routeKey + " */ " + dbConfig.getValidationQuery();
-            
-            environment.healthChecks().register(
-                    routeKey,
-                    new SessionFactoryHealthCheck(environment.getHealthCheckExecutorService(),
-                    		dbConfig.getValidationQueryTimeout().or(Duration.seconds(5)),
-                    		sessionFactory, validationQuery));
-            sessionFactories.put(routeKey, sessionFactory);
-        }
-
-        this.sessionFactoryMap = ImmutableMap.copyOf(sessionFactories);
+    public final void run(T configuration, Environment environment) throws Exception {    	
+        this.sessionFactoryMap = ImmutableMap.copyOf(buildSessionFactories(configuration, environment));
         environment.jersey().register(new RoutingUnitOfWorkApplicationListener(this.sessionFactoryMap));
+    }
+    
+    private Map<String, SessionFactory> buildSessionFactories(T configuration, Environment environment) throws Exception {
+    	
+    	List<ListenableFuture<FutureCallResult>> listenableFutureList = new ArrayList<ListenableFuture<FutureCallResult>>();
+    	
+        final Map<String, SessionFactory> sessionFactories = new LinkedHashMap<>();
+        
+        for (DataSourceRoute route : getDataSourceRoutes(configuration)) {
+        	listenableFutureList.add(getAgencySessionFactory(route, environment));
+        }
+        
+        ListenableFuture<List<FutureCallResult>> futureResults = Futures.allAsList(listenableFutureList);
+        startSignal.countDown();       
+        
+        List<FutureCallResult> listOfFutureCallresults = futureResults.get();
+        
+        System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** Done waiting, " + listOfFutureCallresults.size() + " results");
+        
+		for(FutureCallResult futureCallResult : listOfFutureCallresults){
+			final String routeKey = futureCallResult.route.getRouteName();
+			final DataSourceFactory dbConfig = futureCallResult.route.getDatabase();
+            
+			String validationQuery = "/* Sess Factory Health Check routeKey " + routeKey + " */ " + dbConfig.getValidationQuery();
+
+			environment.healthChecks().register(	routeKey,
+													new SessionFactoryHealthCheck(environment.getHealthCheckExecutorService(),
+																					dbConfig.getValidationQueryTimeout().or(Duration.seconds(5)),
+																					futureCallResult.sessionFactory, validationQuery));			
+			sessionFactories.put(routeKey, futureCallResult.sessionFactory);
+		}
+		
+        return sessionFactories;
+    }
+
+    private ListenableFuture<FutureCallResult> getAgencySessionFactory(final DataSourceRoute route, final Environment environment) {
+    	final RoutingHibernateBundle<T> routingHibernateBundle = this;
+    	
+    	return executorService.submit(new Callable<FutureCallResult>() {
+    		@Override
+    		public FutureCallResult call() throws Exception {
+    			startSignal.await();
+    			System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** Start Future Call for agency " + route.getRouteName());    			    			
+    			final SessionFactory sessionFactory = sessionFactoryFactory.build(routingHibernateBundle, environment, route.getDatabase(), entities, route.getRouteName());
+    			
+    			FutureCallResult result = new FutureCallResult();
+    			result.route = route;
+    			result.sessionFactory = sessionFactory;
+
+    			System.out.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!********** End Future Call for agency " + route.getRouteName());
+    			
+    			return result;
+    		}
+    	});
+    }
+    
+    class FutureCallResult {
+    	DataSourceRoute route;
+    	SessionFactory sessionFactory;
     }
 }
